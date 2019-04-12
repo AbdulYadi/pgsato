@@ -6,5 +6,5 @@ The SQL file contains command:<br />
 2. Create <b>sato.server</b> table if not exists.<br />
 3. Create user defined functions if not exists.<br />
 
-Run SQL file with following command (replace text in <...> with your specific setting):
+Run SQL file with following command (replace text in <...> with your specific setting):<br />
 $ <path-to-psql>/psql -U <db_user> -h <db_host> -p <db_port> -f sato.sql -d <db_name>
