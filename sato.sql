@@ -20,6 +20,7 @@ WITH (OIDS=FALSE);
 
 CREATE OR REPLACE FUNCTION sato.helper_mmdot(i_mm numeric, i_dpi smallint)
 RETURNS integer AS $BODY$ SELECT ceil(($1 * $2)/25.4)::integer; $BODY$ LANGUAGE sql IMMUTABLE;
+REVOKE ALL ON FUNCTION sato.helper_mmdot(numeric, smallint) FROM public;
 
 CREATE OR REPLACE FUNCTION sato.control_qty(i_qty integer)
   RETURNS text AS
@@ -635,3 +636,4 @@ BEGIN
 END;
 $BODY$
   LANGUAGE plpgsql VOLATILE SECURITY DEFINER;
+GRANT EXECUTE ON FUNCTION sato.print(text, json[]) TO public;
