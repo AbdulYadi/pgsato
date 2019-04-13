@@ -531,7 +531,7 @@ BEGIN
 END;
 $BODY$
   LANGUAGE plpgsql IMMUTABLE;
-REVOKE ALL ON FUNCTION sato.rfid_uhfwrite(text) FROM public;
+REVOKE ALL ON FUNCTION sato.rfid_uhfwrite(json) FROM public;
 
 DROP FUNCTION IF EXISTS sato.print(text, json[]);
 CREATE OR REPLACE FUNCTION sato.print(IN t_server text, VARIADIC j_jobs json[], OUT b_rfidwritesuccess boolean, OUT t_err text, OUT t_epc text, OUT t_tid text)
