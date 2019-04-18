@@ -41,24 +41,6 @@ $BODY$
   LANGUAGE plpgsql IMMUTABLE;
 REVOKE ALL ON FUNCTION sato.control_qty(integer) FROM public;
 
-CREATE OR REPLACE FUNCTION sato.system_mode(t_mode text)
-  RETURNS text AS
-$BODY$
-DECLARE
-	/*{ "cmd":"mode",
-		"arg": "0/1/2/3/4/5/6/7/8/B"
-		}*/	
-	_ESC text:='1B';
-BEGIN
-	IF COALESCE(t_mode,'') NOT IN  ('0','1','2','3','4','5','6','7','8','B') THEN
-		RAISE EXCEPTION '/*mode command argument is out of range*/';
-	END IF;
-	RETURN _ESC || encode(('PM' || t_mode)::bytea, 'hex'::text);
-END;
-$BODY$
-  LANGUAGE plpgsql IMMUTABLE;
-REVOKE ALL ON FUNCTION sato.system_mode(text) FROM public;
-
 CREATE OR REPLACE FUNCTION sato.position_vert(i_dpi smallint, i_max integer, i_pos numeric)
   RETURNS text AS
 $BODY$
@@ -130,50 +112,6 @@ END;
 $BODY$
   LANGUAGE plpgsql IMMUTABLE;
 REVOKE ALL ON FUNCTION sato.position_origin(smallint, integer, integer, json) FROM public;
-
-CREATE OR REPLACE FUNCTION sato.modif_ratio(j_arg json)
-  RETURNS text AS
-$BODY$
-DECLARE
-	/*{ "cmd":"ratio",
-		"arg":{"v": nn, "h": nn}
-		}*/	
-	_t text;
-	_int integer;
-	_d text:=''::text;
-	_MINRATIO integer:=1;
-	_MAXRATIO integer:=36;
-	_ESC text:='1B';
-BEGIN
-	IF j_arg IS NULL THEN
-		RAISE EXCEPTION '/*invalid ratio command argument*/';
-	END IF;
-
-	_t:=j_arg->>'v';
-	IF _t IS NULL THEN
-		RAISE EXCEPTION '/*invalid ratio command argument, v is not found*/';
-	END IF;	
-	_int:=_t::integer;
-	IF _int<_MINRATIO OR _int>_MAXRATIO THEN
-		RAISE EXCEPTION '/*invalid ratio command argument, v is out of range*/';
-	END IF;
-	_d:=_d || lpad(_int::text, 2, '0');
-
-	_t:=j_arg->>'h';
-	IF _t IS NULL THEN
-		RAISE EXCEPTION '/*invalid ratio command argument, h is not found*/';
-	END IF;	
-	_int:=_t::integer;
-	IF _int<_MINRATIO OR _int>_MAXRATIO THEN
-		RAISE EXCEPTION '/*invalid ratio command argument, h is out of range*/';
-	END IF;
-	_d:=_d || lpad(_int::text, 2, '0');
-
-	RETURN _ESC || encode(('L' || _d)::bytea, 'hex'::text);
-END;
-$BODY$
-  LANGUAGE plpgsql IMMUTABLE;
-REVOKE ALL ON FUNCTION sato.modif_ratio(json) FROM public;
 
 CREATE OR REPLACE FUNCTION sato.intel_feed(i_dpi smallint, i_min integer, i_max integer, j_arg json)
   RETURNS text AS
@@ -524,7 +462,7 @@ BEGIN
 	END IF;
 	_pad:=_pad*_MUL;
 	IF _pad<_MUL  OR _pad>_MAX THEN
-		RAISE EXCEPTION '/*RFID UHF data must be >=4 and <=124*/';
+		RAISE EXCEPTION '/*RFID UHF data must be >=% and <=%*/', _MUL, _MAX;
 	END IF;
 	_t:=lpad(_t, _pad, '0');	
 	_t:='e:h,epc:' || _t /*|| ',lck:00001'*/ || ';';	
@@ -534,7 +472,194 @@ $BODY$
   LANGUAGE plpgsql IMMUTABLE;
 REVOKE ALL ON FUNCTION sato.rfid_uhfwrite(json) FROM public;
 
-DROP FUNCTION IF EXISTS sato.print(text, json[]);
+CREATE OR REPLACE FUNCTION sato.status_do(IN t_host text, IN i_port smallint,
+	OUT i_printerstatus smallint, OUT t_printerstatus text,
+	OUT i_bufferstatus smallint, OUT t_bufferstatus text,
+	OUT i_ribbonstatus smallint, OUT t_ribbonstatus text,
+	OUT i_mediastatus smallint, OUT t_mediastatus text,
+	OUT i_error smallint, OUT t_error text,
+	OUT i_batterystatus smallint, OUT t_batterystatus text,
+	OUT i_remainprint integer
+)
+  RETURNS SETOF record AS
+$BODY$
+DECLARE
+	_resp text;
+	_resparr text[];
+	_resparrlen integer;
+	_subtext text;
+	_i integer;
+BEGIN
+	_resp:=trim(public.pgsocketsendrcvstxetx(t_host, i_port, 30, 30, (E'\\x12' || encode('PG','hex'))::bytea )::text);	
+	_resparr:=regexp_split_to_array(_resp, ',');
+	_resparrlen:=cardinality(_resparr);
+
+	i_printerstatus:=-1;	t_printerstatus:='not available';
+	i_bufferstatus:=-1;		t_bufferstatus:='not available';
+	i_ribbonstatus:=-1;		t_ribbonstatus:='not available';
+	i_mediastatus:=-1;		t_mediastatus:='not available';
+	i_error:=-1;			t_error:='not available';
+	i_batterystatus:=-1;	t_batterystatus:='not available';
+	i_remainprint:=-1;
+
+	FOR _i IN 2.._resparrlen LOOP
+		_subtext:=trim(_resparr[_i]);		
+		IF _subtext ~ '^PS[0-9]{1,1}$' THEN
+			i_printerstatus:=right(_subtext, 1)::smallint;
+			t_printerstatus:=CASE WHEN i_printerstatus=0 THEN 'Standby'
+				WHEN i_printerstatus=1 THEN 'Waiting for dispensing'
+				WHEN i_printerstatus=2 THEN 'Analyzing'
+				WHEN i_printerstatus=3 THEN 'Printing'
+				WHEN i_printerstatus=4 THEN 'Offline'
+				WHEN i_printerstatus=5 THEN 'Error'
+				ELSE 'No explanation'
+				END;
+		ELSIF _subtext ~ '^RS[0-9]{1,1}' THEN
+			i_bufferstatus:=right(_subtext, 1)::smallint;
+			t_bufferstatus:=CASE WHEN i_bufferstatus=0 THEN 'Buffer available'
+				WHEN i_bufferstatus=1 THEN 'Buffer near full'
+				WHEN i_bufferstatus=2 THEN 'Buffer full'
+				ELSE 'No explanation'
+				END;
+		ELSIF _subtext ~ '^RE[0-9]{1,1}' THEN
+			i_ribbonstatus:=right(_subtext, 1)::smallint;
+			t_ribbonstatus:=CASE WHEN i_ribbonstatus=0 THEN 'Ribbon present'
+				WHEN i_ribbonstatus=1 THEN 'Ribbon near end'
+				WHEN i_ribbonstatus=2 THEN 'No Ribbon'
+				WHEN i_ribbonstatus=3 THEN 'Direct thermal model'
+				ELSE 'No explanation'
+				END;
+		ELSIF _subtext ~ '^PE[0-9]{1,1}' THEN
+			i_mediastatus:=right(_subtext, 1)::smallint;
+			t_mediastatus:=CASE WHEN i_mediastatus=0 THEN 'Media present'
+				WHEN i_mediastatus=2 THEN 'No media'
+				ELSE 'No explanation'
+				END;			
+		ELSIF _subtext ~ '^EN[0-9]{2,2}' THEN
+			i_error:=right(_subtext, 2)::smallint;
+			t_error:=CASE WHEN i_error=0 THEN 'Online'
+				WHEN i_error=1 THEN 'Offline'
+				WHEN i_error=2 THEN 'Machine error'
+				WHEN i_error=3 THEN 'Memory error'
+				WHEN i_error=4 THEN 'Program error'
+				WHEN i_error=5 THEN 'Setting information error (FLASH-ROM error)'
+				WHEN i_error=6 THEN 'Setting information error (EE-PROM error)'
+				WHEN i_error=7 THEN 'Download error'
+				WHEN i_error=8 THEN 'Parity error'
+				WHEN i_error=9 THEN 'Over run'
+				WHEN i_error=10 THEN 'Framing error'
+				WHEN i_error=11 THEN 'LAN timeout error'
+				WHEN i_error=12 THEN 'Buffer error'
+				WHEN i_error=13 THEN 'Head open'
+				WHEN i_error=14 THEN 'Paper end'
+				WHEN i_error=15 THEN 'Ribbon end'
+				WHEN i_error=16 THEN 'Media error'
+				WHEN i_error=17 THEN 'Sensor error'
+				WHEN i_error=18 THEN 'Printhead error'
+				WHEN i_error=19 THEN 'Cover open error'
+				WHEN i_error=20 THEN 'Memory/Card type error'
+				WHEN i_error=21 THEN 'Memory/Card read/write error'
+				WHEN i_error=22 THEN 'Memory/Card full error'
+				WHEN i_error=23 THEN 'Memory/Card no battery error'
+				WHEN i_error=24 THEN 'Ribbon saver error'
+				WHEN i_error=25 THEN 'Cutter error'
+				WHEN i_error=26 THEN 'Cutter sensor error'
+				WHEN i_error=27 THEN 'Stacker full error'
+				WHEN i_error=28 THEN 'Command error'
+				WHEN i_error=29 THEN 'Sensor error at Power-On'
+				WHEN i_error=30 THEN 'RFID tag error'
+				WHEN i_error=31 THEN 'Interface card error'
+				WHEN i_error=32 THEN 'Rewinder error'
+				WHEN i_error=33 THEN 'Other error'
+				WHEN i_error=34 THEN 'RFID control error'
+				WHEN i_error=35 THEN 'Head density error'
+				WHEN i_error=36 THEN 'Kanji data error'
+				WHEN i_error=37 THEN 'Calendar error'
+				WHEN i_error=38 THEN 'Item No error'
+				WHEN i_error=39 THEN 'BCC error'
+				WHEN i_error=40 THEN 'Cutter cover open error'
+				WHEN i_error=41 THEN 'Ribbon rewind non-lock error'
+				WHEN i_error=42 THEN 'Communication timeout error'
+				WHEN i_error=43 THEN 'Lid latch open error'
+				WHEN i_error=44 THEN 'No media error at Power-On'
+				WHEN i_error=45 THEN 'SD card access error'
+				WHEN i_error=46 THEN 'SD card full error'
+				WHEN i_error=47 THEN 'Head lift error'
+				WHEN i_error=48 THEN 'Head overheat error'
+				WHEN i_error=49 THEN 'SNTP time correction error'
+				WHEN i_error=50 THEN 'CRC error'
+				WHEN i_error=51 THEN 'Cutter motor error'
+				WHEN i_error=52 THEN 'WLAN module error'
+				WHEN i_error=53 THEN 'Scanner reading error'
+				WHEN i_error=54 THEN 'Scanner checking error'
+				WHEN i_error=55 THEN 'Scanner connection error'
+				WHEN i_error=56 THEN 'Bluetooth module error'
+				WHEN i_error=57 THEN 'EAP authentication error (EAP failed)'
+				WHEN i_error=58 THEN 'EAP authentication error (time out)'
+				WHEN i_error=59 THEN 'Battery error'
+				WHEN i_error=60 THEN 'Low battery error'
+				WHEN i_error=61 THEN 'Low battery error (charging)'
+				WHEN i_error=62 THEN 'Battery not installed error'
+				WHEN i_error=63 THEN 'Battery temperature error'
+				WHEN i_error=64 THEN 'Battery deterioration error'
+				WHEN i_error=65 THEN 'Motor temperature error'
+				WHEN i_error=66 THEN 'Inside chassis temperature error'
+				WHEN i_error=67 THEN 'Jam error'
+				WHEN i_error=68 THEN 'SIPL field full error'
+				WHEN i_error=69 THEN 'Power off error when charging'
+				WHEN i_error=70 THEN 'WLAN module error'
+				WHEN i_error=71 THEN 'Option mismatch error'
+				WHEN i_error=72 THEN 'Battery deterioration error (notice)'
+				WHEN i_error=73 THEN 'Battery deterioration error (warning)'
+				WHEN i_error=74 THEN 'Power off error'
+				WHEN i_error=75 THEN 'Non RFID warning error'
+				WHEN i_error=76 THEN 'Barcode reader connection error'
+				WHEN i_error=77 THEN 'Barcode reading error'
+				WHEN i_error=78 THEN 'Barcode verification error'
+				WHEN i_error=79 THEN 'Barcode reading error (verification start position abnormally)'
+				ELSE 'No explanation'
+				END;			
+		ELSIF _subtext ~ '^BT[0-9]{1,1}' THEN
+			i_batterystatus:=right(_subtext, 1)::smallint;
+			t_batterystatus:=CASE WHEN i_batterystatus=0 THEN 'Normal'
+				WHEN i_batterystatus=1 THEN 'Battery near end'
+				WHEN i_batterystatus=2 THEN 'Battery error'
+				ELSE 'No explanation'
+				END;
+		ELSIF _subtext ~ '^Q[0-9]{6,6}' THEN
+			i_remainprint:=right(_subtext, 6)::integer;
+		END IF;
+	END LOOP;	
+	RETURN NEXT;
+	RETURN;
+END;
+$BODY$
+  LANGUAGE plpgsql STABLE SECURITY DEFINER;
+REVOKE ALL ON FUNCTION sato.status_do(text, smallint) FROM public;
+
+CREATE OR REPLACE FUNCTION sato.status(IN t_server text,
+	OUT i_printerstatus smallint, OUT t_printerstatus text,
+	OUT i_bufferstatus smallint, OUT t_bufferstatus text,
+	OUT i_ribbonstatus smallint, OUT t_ribbonstatus text,
+	OUT i_mediastatus smallint, OUT t_mediastatus text,
+	OUT i_error smallint, OUT t_error text,
+	OUT i_batterystatus smallint, OUT t_batterystatus text,
+	OUT i_remainprint integer
+) RETURNS SETOF record AS
+$BODY$
+DECLARE
+	_server record;
+BEGIN
+	SELECT t.* INTO _server FROM sato.server t WHERE t.id = t_server;	
+	IF NOT FOUND THEN
+		RAISE EXCEPTION '/*printer server % is not found*/', t_server;
+	END IF;
+	RETURN QUERY SELECT * FROM sato.status_do(_server.host, _server.port);
+	RETURN;
+END;
+$BODY$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+GRANT EXECUTE ON FUNCTION sato.status(text) TO public;
+
 CREATE OR REPLACE FUNCTION sato.print(IN t_server text, VARIADIC j_jobs json[], OUT b_rfidwritesuccess boolean, OUT t_err text, OUT t_epc text, OUT t_tid text)
   RETURNS SETOF record AS
 $BODY$
@@ -546,11 +671,17 @@ DECLARE
 	_job json;
 	_cmd text;
 	_b text;	
+	_status record;
+	_statusloop smallint;
+	_MAXSTATUSLOOP smallint:=10;
+	_needribbon boolean:=false;
+	_needmedia boolean:=false;	
 	_needresponse boolean:=false;
 -------------------------	
 	_resp text;
 	_resparr text[];
 	_resparrlen integer;
+	_i integer;
 	_errcode text;
 	_subtext text;	
 BEGIN
@@ -569,25 +700,30 @@ BEGIN
 			_b:=_b || sato.position_origin(_server.dpi, _server.maxvert, _server.maxhorz, _job->'arg');
 		ELSIF _cmd = 'mediasize' THEN		
 			_b:=_b || sato.system_mediasize(_server.dpi, _server.maxlabelheight, _server.maxlabelwidth, _job->'arg');
-		ELSIF _cmd = 'mode' THEN
-			_b:=_b || sato.system_mode(_job->>'arg');			
 		ELSIF _cmd = 'text' THEN
+			_needribbon:=true;
+			_needmedia:=true;
 			_b:=_b || sato.font_text(_server.dpi, _job->'arg');
 		ELSIF _cmd = 'qr' THEN
+			_needribbon:=true;
+			_needmedia:=true;		
 			_b:=_b || sato.code2d_qr(_job->'arg');
 		ELSIF _cmd = 'dm' THEN
+			_needribbon:=true;
+			_needmedia:=true;		
 			_b:=_b || sato.code2d_dm(_job->'arg');
 		ELSIF _cmd = 'bmp' THEN
+			_needribbon:=true;
+			_needmedia:=true;		
 			_b:=_b || sato.graphic_bmp(_job->>'arg');
 		ELSIF _cmd = 'qty' THEN
 			_b:=_b || sato.control_qty((_job->>'arg')::integer);
-		ELSIF _cmd = 'ratio' THEN
-			_b:=_b || sato.modif_ratio(_job->'arg');			
 		ELSIF _cmd = 'feed' THEN
 			_b:=_b || sato.intel_feed(_server.dpi, _server.minfeed, _server.maxfeed, _job->'arg');
 		ELSIF _cmd = 'backfeed' THEN
 			_b:=_b || sato.intel_backfeed(_server.dpi, _server.minbackfeed, _server.maxbackfeed, _job->'arg');			
 		ELSIF _cmd = 'uhfwrite' THEN
+			_needmedia:=true;
 			_needresponse:= COALESCE(NULLIF(((_job->'arg')->>'validate'),''), 'false')::boolean;
 			_b:=_b || sato.rfid_uhfwrite(_job->'arg');			
 		ELSE
@@ -595,9 +731,55 @@ BEGIN
 		END IF;
 	END LOOP;			
 	_b:= E'\\x' || _b || _ESC || encode(_STOP::bytea, 'hex');
+
+	_statusloop:=0;
+	LOOP
+		_statusloop:=_statusloop+1;
+		SELECT * INTO _status FROM sato.status_do(_server.host, _server.port);
+		IF _status.i_error != 0 THEN
+			RAISE EXCEPTION '/*printer error: %*/', _status.t_error;
+		END IF;
+		IF _status.i_printerstatus !=0 THEN
+			IF _status.i_printerstatus IN (4,5) OR _statusloop > _MAXSTATUSLOOP THEN
+				RAISE EXCEPTION '/*printer error: %*/', _status.t_printerstatus;
+			END IF;
+			PERFORM pg_sleep(0.5);
+			CONTINUE;				
+		END IF;
+		IF _status.i_bufferstatus !=0 THEN
+			IF _statusloop > _MAXSTATUSLOOP THEN
+				RAISE EXCEPTION '/*printer error: %*/', _status.t_bufferstatus;
+			END IF;
+			PERFORM pg_sleep(0.5);
+			CONTINUE;
+		END IF;
+		IF _needribbon AND _status.i_ribbonstatus=2 THEN
+			RAISE EXCEPTION '/*printer error: %*/', _status.t_ribbonstatus;
+		END IF;
+		IF _needmedia AND _status.i_mediastatus !=0 THEN
+			RAISE EXCEPTION '/*printer error: %*/', _status.t_mediastatus;
+		END IF;
+		IF _needmedia AND _status.i_batterystatus = 2 THEN
+			RAISE EXCEPTION '/*printer error: %*/', _status.t_batterystatus;
+		END IF;		
+		EXIT;
+	END LOOP;
+	
 	PERFORM public.pgsocketsend(_server.host, _server.port, 30/*timeoutseconds*/, _b::bytea);	
 	IF _needresponse THEN
-		PERFORM pg_sleep(2);
+		_statusloop:=0;
+		LOOP
+			PERFORM pg_sleep(0.5);
+			_statusloop:=_statusloop+1;
+			SELECT * INTO _status FROM sato.status_do(_server.host, _server.port);
+			IF _status.i_printerstatus != 0 THEN
+				IF _statusloop > (2*_MAXSTATUSLOOP) THEN
+					RAISE EXCEPTION '/*printer error: %*/', _status.t_printerstatus;
+				END IF;			
+				CONTINUE;
+			END IF;
+			EXIT;
+		END LOOP;
 		_resp:=public.pgsocketsendrcvstxetx(_server.host, _server.port, 30, 30, (E'\\x12' || encode('PK','hex'))::bytea )::text;
 		_resp:=regexp_replace(trim(_resp), '\\015\\012$', '');		
 		_resparr:=regexp_split_to_array(_resp, ',');
@@ -614,22 +796,14 @@ BEGIN
 		t_epc:=NULL::text;
 		t_tid:=NULL::text;
 		_resparrlen:=cardinality(_resparr);
-		IF _resparrlen>3 THEN
-			_subtext:=substr(_resparr[4],1,3);
+		FOR _i IN 4..int4smaller(_resparrlen,5) LOOP
+			_subtext:=substr(_resparr[_i],1,3);
 			IF _subtext='EP:' THEN
-				t_epc:=substr(_resparr[4], 4);
+				t_epc:=substr(_resparr[_i], 4);
 			ELSIF _subtext='ID:' THEN
-				t_tid:=substr(_resparr[4], 4);
+				t_tid:=substr(_resparr[_i], 4);
 			END IF;
-		END IF;
-		IF _resparrlen>4 THEN
-			_subtext:=substr(_resparr[5],1,3);
-			IF _subtext='EP:' THEN
-				t_epc:=substr(_resparr[5], 4);
-			ELSIF _subtext='ID:' THEN
-				t_tid:=substr(_resparr[5], 4);
-			END IF;		
-		END IF;		
+		END LOOP;
 		RETURN NEXT;		
 	END IF;
 	RETURN;
