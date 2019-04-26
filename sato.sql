@@ -18,21 +18,6 @@ CREATE TABLE IF NOT EXISTS sato.server
 )
 WITH (OIDS=FALSE);
 
-CREATE OR REPLACE FUNCTION sato.bytea_import(p_path text)
-  RETURNS bytea AS
-$BODY$
-declare
-  l_oid oid;
-  p_result bytea;
-begin
-  select lo_import(p_path) into l_oid;
-  select lo_get(l_oid) INTO p_result;
-  perform lo_unlink(l_oid);
-  return p_result;
-end;$BODY$
-  LANGUAGE plpgsql VOLATILE;
-GRANT EXECUTE ON FUNCTION sato.bytea_import(text) TO public;
-
 CREATE OR REPLACE FUNCTION sato.helper_mmdot(i_mm numeric, i_dpi smallint)
 RETURNS integer AS $BODY$ SELECT ceil(($1 * $2)/25.4)::integer; $BODY$ LANGUAGE sql IMMUTABLE;
 REVOKE ALL ON FUNCTION sato.helper_mmdot(numeric, smallint) FROM public;
