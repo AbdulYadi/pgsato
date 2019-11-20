@@ -484,15 +484,13 @@ CREATE OR REPLACE FUNCTION sato.status_do(IN t_host text, IN i_port smallint,
   RETURNS SETOF record AS
 $BODY$
 DECLARE
-	_respbytea bytea;
 	_resp text;
 	_resparr text[];
 	_resparrlen integer;
 	_subtext text;
 	_i integer;
 BEGIN
-	_respbytea:=public.pgsocketsendrcvstxetx(t_host, i_port, 30, 30, (E'\\x12' || encode('PG','hex'))::bytea);
-	_resp:=encode(_respbytea, 'escape'); --trim(_respbytea::text);	
+	_resp:=trim(public.pgsocketsendrcvstxetx(t_host, i_port, 30, 30, (E'\\x12' || encode('PG','hex'))::bytea )::text);	
 	_resparr:=regexp_split_to_array(_resp, ',');
 	_resparrlen:=cardinality(_resparr);
 
